@@ -19482,6 +19482,12 @@ var parseBody = async (request, options = /* @__PURE__ */ Object.create(null)) =
   return {};
 };
 async function parseFormData(request, options) {
+  if (!isRawRequest(request) && request.bodyCache.formData) {
+    return convertFormDataToBodyData(
+      await request.bodyCache.formData,
+      options
+    );
+  }
   const headers = isRawRequest(request) ? request.headers : request.raw.headers;
   const arrayBuffer = await request.arrayBuffer();
   const formDataPromise = bufferToFormData(arrayBuffer, headers.get("Content-Type") || "");
@@ -19671,18 +19677,16 @@ var checkOptionalParameter = (path) => {
   });
   return results.filter((v2, i2, a2) => a2.indexOf(v2) === i2);
 };
+var tryDecodeURIComponent = (str) => str.indexOf("%") !== -1 ? tryDecode(str, decodeURIComponent_) : str;
 var _decodeURI = (value) => {
-  if (!/[%+]/.test(value)) {
-    return value;
-  }
   if (value.indexOf("+") !== -1) {
     value = value.replace(/\+/g, " ");
   }
-  return value.indexOf("%") !== -1 ? tryDecode(value, decodeURIComponent_) : value;
+  return tryDecodeURIComponent(value);
 };
 var _getQueryParam = (url, key, multiple) => {
   let encoded;
-  if (!multiple && key && !/[%+]/.test(key)) {
+  if (!multiple && key && key.indexOf("%") === -1 && key.indexOf("+") === -1) {
     let keyIndex2 = url.indexOf("?", 8);
     if (keyIndex2 === -1) {
       return void 0;
@@ -19706,7 +19710,7 @@ var _getQueryParam = (url, key, multiple) => {
       return void 0;
     }
   }
-  const results = {};
+  const results = /* @__PURE__ */ Object.create(null);
   encoded ??= /[%+]/.test(url);
   let keyIndex = url.indexOf("?", 8);
   while (keyIndex !== -1) {
@@ -19754,7 +19758,6 @@ var getQueryParams = (url, key) => {
 var decodeURIComponent_ = decodeURIComponent;
 
 // node_modules/hono/dist/request.js
-var tryDecodeURIComponent = (str) => tryDecode(str, decodeURIComponent_);
 var HonoRequest = class {
   /**
    * `.raw` can get the raw Request object.
@@ -19793,7 +19796,6 @@ var HonoRequest = class {
     this.raw = request;
     this.path = path;
     this.#matchResult = matchResult;
-    this.#validatedData = {};
   }
   param(key) {
     return key ? this.#getDecodedParam(key) : this.#getAllDecodedParams();
@@ -19801,7 +19803,7 @@ var HonoRequest = class {
   #getDecodedParam(key) {
     const paramKey = this.#matchResult[0][this.routeIndex][1][key];
     const param = this.#getParamValue(paramKey);
-    return param && /\%/.test(param) ? tryDecodeURIComponent(param) : param;
+    return param && tryDecodeURIComponent(param);
   }
   #getAllDecodedParams() {
     const decoded = {};
@@ -19809,7 +19811,7 @@ var HonoRequest = class {
     for (const key of keys) {
       const value = this.#getParamValue(this.#matchResult[0][this.routeIndex][1][key]);
       if (value !== void 0) {
-        decoded[key] = /\%/.test(value) ? tryDecodeURIComponent(value) : value;
+        decoded[key] = tryDecodeURIComponent(value);
       }
     }
     return decoded;
@@ -19827,7 +19829,7 @@ var HonoRequest = class {
     if (name) {
       return this.raw.headers.get(name) ?? void 0;
     }
-    const headerData = {};
+    const headerData = /* @__PURE__ */ Object.create(null);
     this.raw.headers.forEach((value, key) => {
       headerData[key] = value;
     });
@@ -19842,8 +19844,7 @@ var HonoRequest = class {
     if (cachedBody) {
       return cachedBody;
     }
-    const anyCachedKey = Object.keys(bodyCache)[0];
-    if (anyCachedKey) {
+    for (const anyCachedKey in bodyCache) {
       return bodyCache[anyCachedKey].then((body) => {
         if (anyCachedKey === "json") {
           body = JSON.stringify(body);
@@ -19946,10 +19947,11 @@ var HonoRequest = class {
    * @param data - The validated data to add.
    */
   addValidatedData(target, data) {
-    this.#validatedData[target] = data;
+    ;
+    (this.#validatedData ??= {})[target] = data;
   }
   valid(target) {
-    return this.#validatedData[target];
+    return this.#validatedData?.[target];
   }
   /**
    * `.url()` can get the request url strings.
@@ -20351,11 +20353,11 @@ var Context = class {
     return Object.fromEntries(this.#var);
   }
   #newResponse(data, arg, headers) {
-    const responseHeaders = this.#res ? new Headers(this.#res.headers) : this.#preparedHeaders ?? new Headers();
-    if (typeof arg === "object" && "headers" in arg) {
-      const argHeaders = arg.headers instanceof Headers ? arg.headers : new Headers(arg.headers);
-      for (const [key, value] of argHeaders) {
-        if (key.toLowerCase() === "set-cookie") {
+    let responseHeaders = this.#res ? new Headers(this.#res.headers) : this.#preparedHeaders;
+    if (typeof arg === "object" && arg.headers) {
+      responseHeaders ??= new Headers();
+      for (const [key, value] of new Headers(arg.headers)) {
+        if (key === "set-cookie") {
           responseHeaders.append(key, value);
         } else {
           responseHeaders.set(key, value);
@@ -20363,19 +20365,34 @@ var Context = class {
       }
     }
     if (headers) {
-      for (const [k2, v2] of Object.entries(headers)) {
-        if (typeof v2 === "string") {
-          responseHeaders.set(k2, v2);
-        } else {
-          responseHeaders.delete(k2);
-          for (const v22 of v2) {
-            responseHeaders.append(k2, v22);
+      if (!responseHeaders) {
+        let count = 0;
+        for (const k2 in headers) {
+          if (++count > 1 || typeof headers[k2] !== "string") {
+            responseHeaders = new Headers();
+            break;
+          }
+        }
+      }
+      if (responseHeaders) {
+        for (const k2 in headers) {
+          const v2 = headers[k2];
+          if (typeof v2 === "string") {
+            responseHeaders.set(k2, v2);
+          } else {
+            responseHeaders.delete(k2);
+            for (const v22 of v2) {
+              responseHeaders.append(k2, v22);
+            }
           }
         }
       }
     }
     const status = typeof arg === "number" ? arg : arg?.status ?? this.#status;
-    return createResponseInstance(data, { status, headers: responseHeaders });
+    return createResponseInstance(data, {
+      status,
+      headers: responseHeaders ?? headers
+    });
   }
   newResponse = (...args) => this.#newResponse(...args);
   /**
@@ -20488,7 +20505,7 @@ var Context = class {
 // node_modules/hono/dist/router.js
 var METHOD_NAME_ALL = "ALL";
 var METHOD_NAME_ALL_LOWERCASE = "all";
-var METHODS = ["get", "post", "put", "delete", "options", "patch"];
+var METHODS = ["get", "post", "put", "delete", "options", "patch", "query"];
 var MESSAGE_MATCHER_IS_ALREADY_BUILT = "Can not add a route since the matcher is already built.";
 var UnsupportedPathError = class extends Error {
 };
@@ -20515,6 +20532,7 @@ var Hono = class _Hono {
   delete;
   options;
   patch;
+  query;
   all;
   on;
   use;
@@ -20814,8 +20832,8 @@ var Hono = class _Hono {
    * @see {@link https://hono.dev/docs/api/hono#fetch}
    *
    * @param {Request} request - request Object of request
-   * @param {Env} Env - env Object
-   * @param {ExecutionContext} - context of execution
+   * @param {Env} env - env Object
+   * @param {ExecutionContext} executionCtx - context of execution
    * @returns {Response | Promise<Response>} response of request
    *
    */
@@ -20907,7 +20925,7 @@ function compareKey(a2, b2) {
     return 1;
   }
   if (a2 === ONLY_WILDCARD_REG_EXP_STR || a2 === TAIL_WILDCARD_REG_EXP_STR) {
-    return 1;
+    return b2 === TAIL_WILDCARD_REG_EXP_STR ? -1 : 1;
   } else if (b2 === ONLY_WILDCARD_REG_EXP_STR || b2 === TAIL_WILDCARD_REG_EXP_STR) {
     return -1;
   }
@@ -20919,76 +20937,75 @@ function compareKey(a2, b2) {
   return a2.length === b2.length ? a2 < b2 ? -1 : 1 : b2.length - a2.length;
 }
 var Node = class _Node {
+  // handler index of a dynamic path, or -1 for a static path terminal
   #index;
   #varIndex;
   #children = /* @__PURE__ */ Object.create(null);
-  insert(tokens, index2, paramMap, context, pathErrorCheckOnly) {
-    if (tokens.length === 0) {
-      if (this.#index !== void 0) {
-        throw PATH_ERROR;
-      }
-      if (pathErrorCheckOnly) {
-        return;
-      }
-      this.#index = index2;
-      return;
-    }
-    const [token, ...restTokens] = tokens;
-    const pattern = token === "*" ? restTokens.length === 0 ? ["", "", ONLY_WILDCARD_REG_EXP_STR] : ["", "", LABEL_REG_EXP_STR] : token === "/*" ? ["", "", TAIL_WILDCARD_REG_EXP_STR] : token.match(/^\:([^\{\}]+)(?:\{(.+)\})?$/);
-    let node;
-    if (pattern) {
-      const name = pattern[1];
-      let regexpStr = pattern[2] || LABEL_REG_EXP_STR;
-      if (name && pattern[2]) {
-        if (regexpStr === ".*") {
-          throw PATH_ERROR;
+  insert(tokens, index2, paramMap, context, isStatic) {
+    let node = this;
+    for (let i2 = 0, len = tokens.length; i2 < len; i2++) {
+      const token = tokens[i2];
+      const pattern = token.length === 1 ? token === "*" ? i2 === len - 1 ? ["", "", ONLY_WILDCARD_REG_EXP_STR] : ["", "", LABEL_REG_EXP_STR] : null : token === "/*" ? ["", "", TAIL_WILDCARD_REG_EXP_STR] : token.match(/^\:([^\{\}]+)(?:\{(.+)\})?$/);
+      let nextNode;
+      if (pattern) {
+        const name = pattern[1];
+        let regexpStr = pattern[2] || LABEL_REG_EXP_STR;
+        if (name && pattern[2]) {
+          if (regexpStr === ".*") {
+            throw PATH_ERROR;
+          }
+          regexpStr = regexpStr.replace(/^\((?!\?:)(?=[^)]+\)$)/, "(?:");
+          if (/\((?!\?:)/.test(regexpStr)) {
+            throw PATH_ERROR;
+          }
+          if (regexpStr.length === 1 && regExpMetaChars.has(regexpStr)) {
+            throw PATH_ERROR;
+          }
         }
-        regexpStr = regexpStr.replace(/^\((?!\?:)(?=[^)]+\)$)/, "(?:");
-        if (/\((?!\?:)/.test(regexpStr)) {
-          throw PATH_ERROR;
+        nextNode = node.#children[regexpStr];
+        if (!nextNode) {
+          if (regexpStr !== ONLY_WILDCARD_REG_EXP_STR && regexpStr !== TAIL_WILDCARD_REG_EXP_STR) {
+            for (const k2 in node.#children) {
+              if (
+                // a single-char pattern coexists with single-char literals as a literal does
+                (regexpStr.length > 1 || k2.length > 1) && k2 !== ONLY_WILDCARD_REG_EXP_STR && k2 !== TAIL_WILDCARD_REG_EXP_STR
+              ) {
+                throw PATH_ERROR;
+              }
+            }
+          }
+          nextNode = node.#children[regexpStr] = new _Node();
         }
-      }
-      node = this.#children[regexpStr];
-      if (!node) {
-        if (Object.keys(this.#children).some(
-          (k2) => k2 !== ONLY_WILDCARD_REG_EXP_STR && k2 !== TAIL_WILDCARD_REG_EXP_STR
-        )) {
-          throw PATH_ERROR;
-        }
-        if (pathErrorCheckOnly) {
-          return;
-        }
-        node = this.#children[regexpStr] = new _Node();
         if (name !== "") {
-          node.#varIndex = context.varIndex++;
+          nextNode.#varIndex ??= context.varIndex++;
+          paramMap.push([name, nextNode.#varIndex]);
+        }
+      } else {
+        nextNode = node.#children[token];
+        if (!nextNode) {
+          for (const k2 in node.#children) {
+            if (k2.length > 1 && k2 !== ONLY_WILDCARD_REG_EXP_STR && k2 !== TAIL_WILDCARD_REG_EXP_STR) {
+              throw PATH_ERROR;
+            }
+          }
+          nextNode = node.#children[token] = new _Node();
         }
       }
-      if (!pathErrorCheckOnly && name !== "") {
-        paramMap.push([name, node.#varIndex]);
-      }
-    } else {
-      node = this.#children[token];
-      if (!node) {
-        if (Object.keys(this.#children).some(
-          (k2) => k2.length > 1 && k2 !== ONLY_WILDCARD_REG_EXP_STR && k2 !== TAIL_WILDCARD_REG_EXP_STR
-        )) {
-          throw PATH_ERROR;
-        }
-        if (pathErrorCheckOnly) {
-          return;
-        }
-        node = this.#children[token] = new _Node();
-      }
+      node = nextNode;
     }
-    node.insert(restTokens, index2, paramMap, context, pathErrorCheckOnly);
+    if (node.#index !== void 0) {
+      throw PATH_ERROR;
+    }
+    node.#index = isStatic ? -1 : index2;
   }
   buildRegExpStr() {
     const childKeys = Object.keys(this.#children).sort(compareKey);
     const strList = childKeys.map((k2) => {
       const c2 = this.#children[k2];
-      return (typeof c2.#varIndex === "number" ? `(${k2})@${c2.#varIndex}` : regExpMetaChars.has(k2) ? `\\${k2}` : k2) + c2.buildRegExpStr();
-    });
-    if (typeof this.#index === "number") {
+      const childStr = c2.buildRegExpStr();
+      return childStr === "" ? "" : (typeof c2.#varIndex === "number" ? `(${k2})@${c2.#varIndex}` : regExpMetaChars.has(k2) ? `\\${k2}` : k2) + childStr;
+    }).filter(Boolean);
+    if (typeof this.#index === "number" && this.#index !== -1) {
       strList.unshift(`#${this.#index}`);
     }
     if (strList.length === 0) {
@@ -21005,12 +21022,20 @@ var Node = class _Node {
 var Trie = class {
   #context = { varIndex: 0 };
   #root = new Node();
-  insert(path, index2, pathErrorCheckOnly) {
+  #index = 0;
+  // dynamic path -> [handler index, param assoc]; static paths are not registered
+  paths = /* @__PURE__ */ Object.create(null);
+  insert(path, isStatic) {
+    if (isStatic) {
+      this.#root.insert(path.split(""), 0, [], this.#context, true);
+      return;
+    }
     const paramAssoc = [];
     const groups = [];
+    let markedPath = path;
     for (let i2 = 0; ; ) {
       let replaced = false;
-      path = path.replace(/\{[^}]+\}/g, (m2) => {
+      markedPath = markedPath.replace(/\{[^}]+\}/g, (m2) => {
         const mark = `@\\${i2}`;
         groups[i2] = [mark, m2];
         i2++;
@@ -21021,7 +21046,7 @@ var Trie = class {
         break;
       }
     }
-    const tokens = path.match(/(?::[^\/]+)|(?:\/\*$)|./g) || [];
+    const tokens = markedPath.match(/(?::[^\/]+)|(?:\/\*$)|./g) || [];
     for (let i2 = groups.length - 1; i2 >= 0; i2--) {
       const [mark] = groups[i2];
       for (let j2 = tokens.length - 1; j2 >= 0; j2--) {
@@ -21031,8 +21056,8 @@ var Trie = class {
         }
       }
     }
-    this.#root.insert(tokens, index2, paramAssoc, this.#context, pathErrorCheckOnly);
-    return paramAssoc;
+    this.#root.insert(tokens, this.#index, paramAssoc, this.#context, false);
+    this.paths[path] = [this.#index++, paramAssoc];
   }
   buildRegExp() {
     let regexp = this.#root.buildRegExpStr();
@@ -21058,7 +21083,6 @@ var Trie = class {
 };
 
 // node_modules/hono/dist/router/reg-exp-router/router.js
-var nullMatcher = [/^$/, [], /* @__PURE__ */ Object.create(null)];
 var wildcardRegExpCache = /* @__PURE__ */ Object.create(null);
 function buildWildcardRegExp(path) {
   return wildcardRegExpCache[path] ??= new RegExp(
@@ -21070,63 +21094,6 @@ function buildWildcardRegExp(path) {
 }
 function clearWildcardRegExpCache() {
   wildcardRegExpCache = /* @__PURE__ */ Object.create(null);
-}
-function buildMatcherFromPreprocessedRoutes(routes) {
-  const trie = new Trie();
-  const handlerData = [];
-  if (routes.length === 0) {
-    return nullMatcher;
-  }
-  const routesWithStaticPathFlag = routes.map(
-    (route) => [!/\*|\/:/.test(route[0]), ...route]
-  ).sort(
-    ([isStaticA, pathA], [isStaticB, pathB]) => isStaticA ? 1 : isStaticB ? -1 : pathA.length - pathB.length
-  );
-  const staticMap = /* @__PURE__ */ Object.create(null);
-  for (let i2 = 0, j2 = -1, len = routesWithStaticPathFlag.length; i2 < len; i2++) {
-    const [pathErrorCheckOnly, path, handlers] = routesWithStaticPathFlag[i2];
-    if (pathErrorCheckOnly) {
-      staticMap[path] = [handlers.map(([h2]) => [h2, /* @__PURE__ */ Object.create(null)]), emptyParam];
-    } else {
-      j2++;
-    }
-    let paramAssoc;
-    try {
-      paramAssoc = trie.insert(path, j2, pathErrorCheckOnly);
-    } catch (e2) {
-      throw e2 === PATH_ERROR ? new UnsupportedPathError(path) : e2;
-    }
-    if (pathErrorCheckOnly) {
-      continue;
-    }
-    handlerData[j2] = handlers.map(([h2, paramCount]) => {
-      const paramIndexMap = /* @__PURE__ */ Object.create(null);
-      paramCount -= 1;
-      for (; paramCount >= 0; paramCount--) {
-        const [key, value] = paramAssoc[paramCount];
-        paramIndexMap[key] = value;
-      }
-      return [h2, paramIndexMap];
-    });
-  }
-  const [regexp, indexReplacementMap, paramReplacementMap] = trie.buildRegExp();
-  for (let i2 = 0, len = handlerData.length; i2 < len; i2++) {
-    for (let j2 = 0, len2 = handlerData[i2].length; j2 < len2; j2++) {
-      const map = handlerData[i2][j2]?.[1];
-      if (!map) {
-        continue;
-      }
-      const keys = Object.keys(map);
-      for (let k2 = 0, len3 = keys.length; k2 < len3; k2++) {
-        map[keys[k2]] = paramReplacementMap[map[keys[k2]]];
-      }
-    }
-  }
-  const handlerMap = [];
-  for (const i2 in indexReplacementMap) {
-    handlerMap[i2] = handlerData[indexReplacementMap[i2]];
-  }
-  return [regexp, handlerMap, staticMap];
 }
 function findMiddleware(middleware, path) {
   if (!middleware) {
@@ -21143,9 +21110,18 @@ var RegExpRouter = class {
   name = "RegExpRouter";
   #middleware;
   #routes;
+  #tries;
   constructor() {
     this.#middleware = { [METHOD_NAME_ALL]: /* @__PURE__ */ Object.create(null) };
     this.#routes = { [METHOD_NAME_ALL]: /* @__PURE__ */ Object.create(null) };
+    this.#tries = { [METHOD_NAME_ALL]: new Trie() };
+  }
+  #insertPath(method, path) {
+    try {
+      this.#tries[method].insert(path, !/\*|\/:/.test(path));
+    } catch (e2) {
+      throw e2 === PATH_ERROR ? new UnsupportedPathError(path) : e2;
+    }
   }
   add(method, path, handler) {
     const middleware = this.#middleware;
@@ -21154,11 +21130,12 @@ var RegExpRouter = class {
       throw new Error(MESSAGE_MATCHER_IS_ALREADY_BUILT);
     }
     if (!middleware[method]) {
-      ;
+      this.#tries[method] = new Trie();
       [middleware, routes].forEach((handlerMap) => {
         handlerMap[method] = /* @__PURE__ */ Object.create(null);
         Object.keys(handlerMap[METHOD_NAME_ALL]).forEach((p2) => {
           handlerMap[method][p2] = [...handlerMap[METHOD_NAME_ALL][p2]];
+          this.#insertPath(method, p2);
         });
       });
     }
@@ -21168,13 +21145,12 @@ var RegExpRouter = class {
     const paramCount = (path.match(/\/:/g) || []).length;
     if (/\*$/.test(path)) {
       const re2 = buildWildcardRegExp(path);
-      if (method === METHOD_NAME_ALL) {
-        Object.keys(middleware).forEach((m2) => {
-          middleware[m2][path] ||= findMiddleware(middleware[m2], path) || findMiddleware(middleware[METHOD_NAME_ALL], path) || [];
-        });
-      } else {
-        middleware[method][path] ||= findMiddleware(middleware[method], path) || findMiddleware(middleware[METHOD_NAME_ALL], path) || [];
-      }
+      Object.keys(middleware).forEach((m2) => {
+        if ((method === METHOD_NAME_ALL || method === m2) && !middleware[m2][path]) {
+          this.#insertPath(m2, path);
+          middleware[m2][path] = findMiddleware(middleware[m2], path) || findMiddleware(middleware[METHOD_NAME_ALL], path) || [];
+        }
+      });
       Object.keys(middleware).forEach((m2) => {
         if (method === METHOD_NAME_ALL || method === m2) {
           Object.keys(middleware[m2]).forEach((p2) => {
@@ -21196,9 +21172,12 @@ var RegExpRouter = class {
       const path2 = paths[i2];
       Object.keys(routes).forEach((m2) => {
         if (method === METHOD_NAME_ALL || method === m2) {
-          routes[m2][path2] ||= [
-            ...findMiddleware(middleware[m2], path2) || findMiddleware(middleware[METHOD_NAME_ALL], path2) || []
-          ];
+          if (!routes[m2][path2]) {
+            this.#insertPath(m2, path2);
+            routes[m2][path2] = [
+              ...findMiddleware(middleware[m2], path2) || findMiddleware(middleware[METHOD_NAME_ALL], path2) || []
+            ];
+          }
           routes[m2][path2].push([handler, paramCount - len + i2 + 1]);
         }
       });
@@ -21210,29 +21189,54 @@ var RegExpRouter = class {
     Object.keys(this.#routes).concat(Object.keys(this.#middleware)).forEach((method) => {
       matchers[method] ||= this.#buildMatcher(method);
     });
-    this.#middleware = this.#routes = void 0;
+    this.#middleware = this.#routes = this.#tries = void 0;
     clearWildcardRegExpCache();
     return matchers;
   }
   #buildMatcher(method) {
-    const routes = [];
-    let hasOwnRoute = method === METHOD_NAME_ALL;
-    [this.#middleware, this.#routes].forEach((r2) => {
-      const ownRoute = r2[method] ? Object.keys(r2[method]).map((path) => [path, r2[method][path]]) : [];
-      if (ownRoute.length !== 0) {
-        hasOwnRoute ||= true;
-        routes.push(...ownRoute);
-      } else if (method !== METHOD_NAME_ALL) {
-        routes.push(
-          ...Object.keys(r2[METHOD_NAME_ALL]).map((path) => [path, r2[METHOD_NAME_ALL][path]])
-        );
+    const middleware = this.#middleware[method];
+    const routes = this.#routes[method];
+    const trie = this.#tries[method];
+    const staticMap = /* @__PURE__ */ Object.create(null);
+    const handlerData = [];
+    [middleware, routes].forEach((r2) => {
+      for (const path in r2) {
+        const handlers = r2[path];
+        const pathData = trie.paths[path];
+        if (!pathData) {
+          staticMap[path] = [handlers.map(([h2]) => [h2, /* @__PURE__ */ Object.create(null)]), emptyParam];
+          continue;
+        }
+        const paramAssoc = pathData[1];
+        handlerData[pathData[0]] = handlers.map(([h2, paramCount]) => {
+          const paramIndexMap = /* @__PURE__ */ Object.create(null);
+          paramCount -= 1;
+          for (; paramCount >= 0; paramCount--) {
+            const [key, value] = paramAssoc[paramCount];
+            paramIndexMap[key] = value;
+          }
+          return [h2, paramIndexMap];
+        });
       }
     });
-    if (!hasOwnRoute) {
-      return null;
-    } else {
-      return buildMatcherFromPreprocessedRoutes(routes);
+    const [regexp, indexReplacementMap, paramReplacementMap] = trie.buildRegExp();
+    for (let i2 = 0, len = handlerData.length; i2 < len; i2++) {
+      for (let j2 = 0, len2 = handlerData[i2].length; j2 < len2; j2++) {
+        const map = handlerData[i2][j2]?.[1];
+        if (!map) {
+          continue;
+        }
+        const keys = Object.keys(map);
+        for (let k2 = 0, len3 = keys.length; k2 < len3; k2++) {
+          map[keys[k2]] = paramReplacementMap[map[keys[k2]]];
+        }
+      }
     }
+    const handlerMap = [];
+    for (const i2 in indexReplacementMap) {
+      handlerMap[i2] = handlerData[indexReplacementMap[i2]];
+    }
+    return [regexp, handlerMap, staticMap];
   }
 };
 
@@ -21425,6 +21429,15 @@ var Node2 = class _Node2 {
             if (m2) {
               params[name] = m2[0];
               this.#pushHandlerSets(handlerSets, child, method, node.#params, params);
+              if (m2[0].length === restPathString.length && child.#children["*"]) {
+                this.#pushHandlerSets(
+                  handlerSets,
+                  child.#children["*"],
+                  method,
+                  node.#params,
+                  params
+                );
+              }
               if (hasChildren(child.#children)) {
                 child.#params = params;
                 const componentCount = m2[0].match(/\//)?.length ?? 0;
@@ -21507,7 +21520,7 @@ var Hono2 = class extends Hono {
 var cors = (options) => {
   const opts = {
     origin: "*",
-    allowMethods: ["GET", "HEAD", "PUT", "POST", "DELETE", "PATCH"],
+    allowMethods: ["GET", "HEAD", "PUT", "POST", "DELETE", "PATCH", "QUERY"],
     allowHeaders: [],
     exposeHeaders: [],
     ...options
@@ -21563,7 +21576,7 @@ var cors = (options) => {
       if (!headers?.length) {
         const requestHeaders = c2.req.header("Access-Control-Request-Headers");
         if (requestHeaders) {
-          headers = requestHeaders.split(/\s*,\s*/);
+          headers = requestHeaders.split(",").map((h2) => h2.trim());
         }
       }
       if (headers?.length) {
@@ -21687,14 +21700,20 @@ var secureHeaders = (customOptions) => {
   const headersToSet = getFilteredHeaders(options);
   const callbacks = [];
   if (options.contentSecurityPolicy) {
-    const [callback, value] = getCSPDirectives(options.contentSecurityPolicy);
+    const [callback, value] = getCSPDirectives(
+      options.contentSecurityPolicy,
+      "Content-Security-Policy"
+    );
     if (callback) {
       callbacks.push(callback);
     }
     headersToSet.push(["Content-Security-Policy", value]);
   }
   if (options.contentSecurityPolicyReportOnly) {
-    const [callback, value] = getCSPDirectives(options.contentSecurityPolicyReportOnly);
+    const [callback, value] = getCSPDirectives(
+      options.contentSecurityPolicyReportOnly,
+      "Content-Security-Policy-Report-Only"
+    );
     if (callback) {
       callbacks.push(callback);
     }
@@ -21727,7 +21746,7 @@ function getFilteredHeaders(options) {
     return typeof overrideValue === "string" ? [defaultValue[0], overrideValue] : defaultValue;
   });
 }
-function getCSPDirectives(contentSecurityPolicy) {
+function getCSPDirectives(contentSecurityPolicy, headerName) {
   const callbacks = [];
   const resultValues = [];
   for (const [directive, value] of Object.entries(contentSecurityPolicy)) {
@@ -21752,7 +21771,7 @@ function getCSPDirectives(contentSecurityPolicy) {
   resultValues.pop();
   return callbacks.length === 0 ? [void 0, resultValues.join("")] : [
     (ctx, headersToSet) => headersToSet.map((values) => {
-      if (values[0] === "Content-Security-Policy" || values[0] === "Content-Security-Policy-Report-Only") {
+      if (values[0] === headerName) {
         const clone = values[1].slice();
         callbacks.forEach((cb) => {
           cb(ctx, clone);
@@ -21938,6 +21957,7 @@ init_crypto();
 
 // node_modules/hono/dist/utils/cookie.js
 var validCookieNameRegEx = /^[\w!#$%&'*.^`|~+-]+$/;
+var relaxedCookieNameRegEx = /^[!#-:<>-[\]-~]+$/;
 var validCookieValueRegEx = /^[ !#-:<-[\]-~]*$/;
 var trimCookieWhitespace = (value) => {
   let start = 0;
@@ -21970,7 +21990,7 @@ var parse = (cookie, name) => {
       continue;
     }
     const cookieName = trimCookieWhitespace(pairStr.substring(0, valueStartPos));
-    if (name && name !== cookieName || !validCookieNameRegEx.test(cookieName) || cookieName in parsedCookie) {
+    if (name && name !== cookieName || !relaxedCookieNameRegEx.test(cookieName) || cookieName in parsedCookie) {
       continue;
     }
     let cookieValue = trimCookieWhitespace(pairStr.substring(valueStartPos + 1));
@@ -21978,7 +21998,7 @@ var parse = (cookie, name) => {
       cookieValue = cookieValue.slice(1, -1);
     }
     if (validCookieValueRegEx.test(cookieValue)) {
-      parsedCookie[cookieName] = cookieValue.indexOf("%") !== -1 ? tryDecode(cookieValue, decodeURIComponent_) : cookieValue;
+      parsedCookie[cookieName] = tryDecodeURIComponent(cookieValue);
       if (name) {
         break;
       }
