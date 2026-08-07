@@ -85,6 +85,38 @@ services:
       # - OAUTH_NODELOC_CLIENT_SECRET=
       # - OAUTH_NODELOC_REDIRECT_URI=https://<your_domain>/oauth/callback
 
+      # X (Twitter) 登录配置
+      # 建议使用 `https://tools.nodeauth.io` 对明文进行编码，支持 aes, base64, hex 类型
+      # - OAUTH_TWITTER_CLIENT_ID=
+      # - OAUTH_TWITTER_CLIENT_SECRET=
+      # - OAUTH_TWITTER_REDIRECT_URI=https://<your_domain>/oauth/callback
+
+      # 飞书 (Feishu) 登录配置
+      # 建议使用 `https://tools.nodeauth.io` 对明文进行编码，支持 aes, base64, hex 类型
+      # - OAUTH_FEISHU_CLIENT_ID=
+      # - OAUTH_FEISHU_CLIENT_SECRET=
+      # - OAUTH_FEISHU_REDIRECT_URI=https://<your_domain>/oauth/callback
+
+      # Lark (海外版飞书) 登录配置
+      # 建议使用 `https://tools.nodeauth.io` 对明文进行编码，支持 aes, base64, hex 类型
+      # - OAUTH_LARK_CLIENT_ID=
+      # - OAUTH_LARK_CLIENT_SECRET=
+      # - OAUTH_LARK_REDIRECT_URI=https://<your_domain>/oauth/callback
+
+      # 钉钉 (Dingtalk) 登录配置
+      # 建议使用 `https://tools.nodeauth.io` 对明文进行编码，支持 aes, base64, hex 类型
+      # - OAUTH_DINGTALK_CLIENT_ID=
+      # - OAUTH_DINGTALK_CLIENT_SECRET=
+      # - OAUTH_DINGTALK_REDIRECT_URI=https://<your_domain>/oauth/callback
+      # - OAUTH_DINGTALK_CORP_ID=corp_id_xxxxx # (可选) 填入企业 CorpId 可在登录时跳过组织选择
+
+      # Microsoft (Azure AD) 登录配置
+      # 建议使用 `https://tools.nodeauth.io` 对明文进行编码，支持 aes, base64, hex 类型
+      # - OAUTH_MICROSOFT_CLIENT_ID=
+      # - OAUTH_MICROSOFT_CLIENT_SECRET=
+      # - OAUTH_MICROSOFT_TENANT_ID=common
+      # - OAUTH_MICROSOFT_REDIRECT_URI=https://<your_domain>/oauth/callback
+
       # Web3 钱包登录 (WalletConnect)
       # 建议使用 `https://tools.nodeauth.io` 对明文进行编码，支持 aes, base64, hex 类型
       # - OAUTH_WALLETCONNECT_PROJECT_ID=
@@ -93,24 +125,25 @@ services:
       # =========== 云端备份供应商配置 ===========
       # Google Drive
       # 建议使用 `https://tools.nodeauth.io` 对明文进行编码，支持 aes, base64, hex 类型
-      # - OAUTH_GOOGLE_CLIENT_ID=
-      # - OAUTH_GOOGLE_CLIENT_SECRET=
+      # - OAUTH_GOOGLE_BACKUP_CLIENT_ID=
+      # - OAUTH_GOOGLE_BACKUP_CLIENT_SECRET=
       # - OAUTH_GOOGLE_BACKUP_REDIRECT_URI=https://<your_domain>/api/backups/oauth/google/callback
 
       # Dropbox
       # 建议使用 `https://tools.nodeauth.io` 对明文进行编码，支持 aes, base64, hex 类型
-      # - OAUTH_DROPBOX_CLIENT_ID=
-      # - OAUTH_DROPBOX_CLIENT_SECRET=
+      # - OAUTH_DROPBOX_BACKUP_CLIENT_ID=
+      # - OAUTH_DROPBOX_BACKUP_CLIENT_SECRET=
       # - OAUTH_DROPBOX_BACKUP_REDIRECT_URI=https://<your_domain>/api/backups/oauth/dropbox/callback
 
       # Microsoft OneDrive
       # 建议使用 `https://tools.nodeauth.io` 对明文进行编码，支持 aes, base64, hex 类型
-      # - OAUTH_MICROSOFT_CLIENT_ID=
-      # - OAUTH_MICROSOFT_CLIENT_SECRET=
+      # - OAUTH_MICROSOFT_BACKUP_CLIENT_ID=
+      # - OAUTH_MICROSOFT_BACKUP_CLIENT_SECRET=
+      # - OAUTH_MICROSOFT_BACKUP_TENANT_ID=
       # - OAUTH_MICROSOFT_BACKUP_REDIRECT_URI=https://<your_domain>/api/backups/oauth/microsoft/callback
 
       # 百度网盘
       # 建议使用 `https://tools.nodeauth.io` 对明文进行编码，支持 aes, base64, hex 类型
-      # - OAUTH_BAIDU_CLIENT_ID=
-      # - OAUTH_BAIDU_CLIENT_SECRET=
+      # - OAUTH_BAIDU_BACKUP_CLIENT_ID=
+      # - OAUTH_BAIDU_BACKUP_CLIENT_SECRET=
       # - OAUTH_BAIDU_BACKUP_REDIRECT_URI=https://<your_domain>/api/backups/oauth/baidu/callback

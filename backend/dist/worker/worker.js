@@ -24593,8 +24593,7 @@ var GoogleProvider = class extends BaseOAuthProvider {
       response_type: "code",
       scope: "openid email profile",
       state,
-      access_type: "online",
-      prompt: "consent"
+      access_type: "online"
     });
     return { url: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}` };
   }
@@ -24645,6 +24644,397 @@ var GoogleProvider = class extends BaseOAuthProvider {
   }
 };
 
+// src/features/auth/providers/twitterProvider.ts
+function base64UrlEncode3(buffer2) {
+  let binary2 = "";
+  const bytes = buffer2 instanceof Uint8Array ? buffer2 : new Uint8Array(buffer2);
+  for (let i2 = 0; i2 < bytes.byteLength; i2++) {
+    binary2 += String.fromCharCode(bytes[i2]);
+  }
+  return btoa(binary2).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+}
+function generateCodeVerifier() {
+  const array = new Uint8Array(32);
+  crypto.getRandomValues(array);
+  return base64UrlEncode3(array);
+}
+async function generateCodeChallenge(verifier) {
+  const encoder6 = new TextEncoder();
+  const data = encoder6.encode(verifier);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+  return base64UrlEncode3(hashBuffer);
+}
+var TwitterProvider = class extends BaseOAuthProvider {
+  id = "twitter";
+  name = "X (Twitter)";
+  color = "#000000";
+  icon = "iconTwitter";
+  whitelistFields = ["id"];
+  // Twitter API v2 通常不提供 email，只能通过 twitter:数字ID 作为白名单凭据
+  constructor(env) {
+    super(env);
+  }
+  async getAuthorizeUrl(state) {
+    const clientId = this.env.OAUTH_TWITTER_CLIENT_ID;
+    const redirectUri = this.env.OAUTH_TWITTER_REDIRECT_URI;
+    if (!clientId || !redirectUri) {
+      throw new AppError("oauth_twitter_config_missing", 500);
+    }
+    const codeVerifier = generateCodeVerifier();
+    const codeChallenge = await generateCodeChallenge(codeVerifier);
+    const params = new URLSearchParams({
+      response_type: "code",
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      state,
+      scope: "tweet.read users.read offline.access",
+      code_challenge: codeChallenge,
+      code_challenge_method: "S256"
+    });
+    return {
+      url: `https://twitter.com/i/oauth2/authorize?${params.toString()}`,
+      codeVerifier
+    };
+  }
+  async handleCallback(params, codeVerifier) {
+    const code = typeof params === "string" ? params : params.get("code");
+    if (!code) {
+      throw new AppError("oauth_code_missing", 400);
+    }
+    if (!codeVerifier) {
+      throw new AppError("oauth_code_verifier_missing", 400);
+    }
+    const clientId = this.env.OAUTH_TWITTER_CLIENT_ID;
+    const clientSecret = this.env.OAUTH_TWITTER_CLIENT_SECRET;
+    const redirectUri = this.env.OAUTH_TWITTER_REDIRECT_URI;
+    const basicAuth = btoa(`${clientId}:${clientSecret}`);
+    const tokenResponse = await fetch("https://api.twitter.com/2/oauth2/token", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Authorization": `Basic ${basicAuth}`
+      },
+      body: new URLSearchParams({
+        code,
+        grant_type: "authorization_code",
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        code_verifier: codeVerifier
+      })
+    });
+    if (!tokenResponse.ok) {
+      let errorDesc = "";
+      try {
+        const err = await tokenResponse.json();
+        errorDesc = err.error_description || err.error;
+      } catch (e2) {
+        errorDesc = "Unknown error";
+      }
+      throw new AppError(`oauth_token_exchange_failed: Twitter | ${tokenResponse.status} - ${errorDesc}`, 502);
+    }
+    const tokenData = await tokenResponse.json();
+    const accessToken = tokenData.access_token;
+    const userResponse = await fetch("https://api.twitter.com/2/users/me?user.fields=profile_image_url", {
+      headers: {
+        "Authorization": `Bearer ${accessToken}`
+      }
+    });
+    if (!userResponse.ok) {
+      throw new AppError(`oauth_api_error: Twitter | ${userResponse.status}`, 502);
+    }
+    const userDataRes = await userResponse.json();
+    const userData = userDataRes.data;
+    if (!userData || !userData.id) {
+      throw new AppError("oauth_api_error: Twitter | Missing user data", 502);
+    }
+    return {
+      id: String(userData.id),
+      username: userData.username,
+      // Twitter handle, e.g., "nodeauth"
+      email: "",
+      avatar: userData.profile_image_url || "",
+      provider: this.id
+    };
+  }
+};
+
+// src/features/auth/providers/baseLarkFeishuProvider.ts
+var BaseLarkFeishuProvider = class extends BaseOAuthProvider {
+  whitelistFields = ["email"];
+  // e.g. accounts.larksuite.com or passport.feishu.cn
+  constructor(env) {
+    super(env);
+  }
+  getAuthorizeUrl(state) {
+    const clientId = this.getClientId();
+    const redirectUri = this.getRedirectUri();
+    if (!clientId || !redirectUri) {
+      throw new AppError(`oauth_${this.id}_config_missing`, 500);
+    }
+    const params = new URLSearchParams({
+      app_id: clientId,
+      redirect_uri: redirectUri,
+      state
+    });
+    return { url: `https://${this.accountDomain}/open-apis/authen/v1/authorize?${params.toString()}` };
+  }
+  async getAppAccessToken() {
+    const response = await fetch(`https://${this.apiDomain}/open-apis/auth/v3/app_access_token/internal`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json; charset=utf-8"
+      },
+      body: JSON.stringify({
+        app_id: this.getClientId(),
+        app_secret: this.getClientSecret()
+      })
+    });
+    if (!response.ok) {
+      throw new AppError(`oauth_token_exchange_failed: ${this.name} App Token | ${response.status}`, 502);
+    }
+    const data = await response.json();
+    if (data.code !== 0 || !data.app_access_token) {
+      throw new AppError(`oauth_token_exchange_failed: ${this.name} App Token | ${data.msg || "Unknown Error"}`, 400);
+    }
+    return data.app_access_token;
+  }
+  async handleCallback(params, _codeVerifier) {
+    const code = typeof params === "string" ? params : params.get("code");
+    if (!code) {
+      throw new AppError("oauth_code_missing", 400);
+    }
+    const appAccessToken = await this.getAppAccessToken();
+    const tokenResponse = await fetch(`https://${this.apiDomain}/open-apis/authen/v1/access_token`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${appAccessToken}`,
+        "Content-Type": "application/json; charset=utf-8"
+      },
+      body: JSON.stringify({
+        grant_type: "authorization_code",
+        code
+      })
+    });
+    if (!tokenResponse.ok) {
+      throw new AppError(`oauth_token_exchange_failed: ${this.name} User Token | ${tokenResponse.status}`, 502);
+    }
+    const tokenData = await tokenResponse.json();
+    if (tokenData.code !== 0 || !tokenData.data) {
+      throw new AppError(`oauth_token_exchange_failed: ${this.name} User Token | ${tokenData.msg || "Unknown Error"}`, 400);
+    }
+    const userInfo = tokenData.data;
+    return {
+      id: String(userInfo.open_id || userInfo.union_id || userInfo.user_id),
+      username: userInfo.en_name || userInfo.name || "",
+      email: userInfo.email || userInfo.enterprise_email || "",
+      avatar: userInfo.avatar_url || "",
+      provider: this.id
+    };
+  }
+};
+
+// src/features/auth/providers/larkProvider.ts
+var LarkProvider = class extends BaseLarkFeishuProvider {
+  id = "lark";
+  name = "Lark";
+  color = "#00D6D9";
+  icon = "iconLark";
+  apiDomain = "open.larksuite.com";
+  accountDomain = "accounts.larksuite.com";
+  constructor(env) {
+    super(env);
+  }
+  getClientId() {
+    return this.env.OAUTH_LARK_CLIENT_ID;
+  }
+  getClientSecret() {
+    return this.env.OAUTH_LARK_CLIENT_SECRET;
+  }
+  getRedirectUri() {
+    return this.env.OAUTH_LARK_REDIRECT_URI;
+  }
+};
+
+// src/features/auth/providers/feishuProvider.ts
+var FeishuProvider = class extends BaseLarkFeishuProvider {
+  id = "feishu";
+  name = "Feishu";
+  color = "#3370FF";
+  icon = "iconFeishu";
+  apiDomain = "open.feishu.cn";
+  accountDomain = "passport.feishu.cn";
+  constructor(env) {
+    super(env);
+  }
+  getClientId() {
+    return this.env.OAUTH_FEISHU_CLIENT_ID;
+  }
+  getClientSecret() {
+    return this.env.OAUTH_FEISHU_CLIENT_SECRET;
+  }
+  getRedirectUri() {
+    return this.env.OAUTH_FEISHU_REDIRECT_URI;
+  }
+};
+
+// src/features/auth/providers/dingtalkProvider.ts
+var DingtalkProvider = class extends BaseOAuthProvider {
+  id = "dingtalk";
+  name = "DingTalk";
+  color = "#0089FF";
+  // 钉钉蓝
+  icon = "iconDingtalk";
+  // 钉钉支持邮箱和高信誉度的手机号作为白名单
+  whitelistFields = ["email", "mobile"];
+  constructor(env) {
+    super(env);
+  }
+  getAuthorizeUrl(state) {
+    const clientId = this.env.OAUTH_DINGTALK_CLIENT_ID;
+    const redirectUri = this.env.OAUTH_DINGTALK_REDIRECT_URI;
+    if (!clientId || !redirectUri) {
+      throw new AppError("oauth_dingtalk_config_missing", 500);
+    }
+    const params = new URLSearchParams({
+      client_id: clientId,
+      response_type: "code",
+      scope: "openid corpid",
+      redirect_uri: redirectUri,
+      state,
+      prompt: "consent"
+    });
+    if (this.env.OAUTH_DINGTALK_CORP_ID) {
+      params.append("corpId", this.env.OAUTH_DINGTALK_CORP_ID);
+    }
+    return { url: `https://login.dingtalk.com/oauth2/auth?${params.toString()}` };
+  }
+  async handleCallback(params, _codeVerifier) {
+    const code = typeof params === "string" ? params : params.get("authCode") || params.get("code");
+    if (!code) {
+      throw new AppError("oauth_code_missing", 400);
+    }
+    const tokenResponse = await fetch("https://api.dingtalk.com/v1.0/oauth2/userAccessToken", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        clientId: this.env.OAUTH_DINGTALK_CLIENT_ID,
+        clientSecret: this.env.OAUTH_DINGTALK_CLIENT_SECRET,
+        code,
+        grantType: "authorization_code"
+      })
+    });
+    if (!tokenResponse.ok) {
+      throw new AppError(`oauth_token_exchange_failed: DingTalk User Token | ${tokenResponse.status}`, 502);
+    }
+    const tokenData = await tokenResponse.json();
+    if (!tokenData.accessToken) {
+      throw new AppError(`oauth_token_exchange_failed: DingTalk User Token | ${JSON.stringify(tokenData)}`, 400);
+    }
+    const userAccessToken = tokenData.accessToken;
+    const userResponse = await fetch("https://api.dingtalk.com/v1.0/contact/users/me", {
+      method: "GET",
+      headers: {
+        "x-acs-dingtalk-access-token": userAccessToken
+      }
+    });
+    if (!userResponse.ok) {
+      throw new AppError(`oauth_user_info_failed: DingTalk | ${userResponse.status}`, 502);
+    }
+    const userInfo = await userResponse.json();
+    if (!userInfo.unionId) {
+      throw new AppError(`oauth_user_info_failed: DingTalk | ${JSON.stringify(userInfo)}`, 400);
+    }
+    return {
+      id: String(userInfo.unionId),
+      username: userInfo.nick || "",
+      mobile: userInfo.mobile || "",
+      email: userInfo.email || "",
+      avatar: userInfo.avatarUrl || "",
+      provider: this.id
+    };
+  }
+};
+
+// src/features/auth/providers/microsoftProvider.ts
+var MicrosoftProvider = class extends BaseOAuthProvider {
+  id = "microsoft";
+  name = "Microsoft";
+  color = "#0078D4";
+  // Microsoft blue
+  icon = "iconMicrosoft";
+  whitelistFields = ["email"];
+  constructor(env) {
+    super(env);
+  }
+  getTenantId() {
+    return this.env.OAUTH_MICROSOFT_TENANT_ID || "common";
+  }
+  getAuthorizeUrl(state) {
+    const clientId = this.env.OAUTH_MICROSOFT_CLIENT_ID;
+    const redirectUri = this.env.OAUTH_MICROSOFT_REDIRECT_URI;
+    const tenantId = this.getTenantId();
+    if (!clientId || !redirectUri) {
+      throw new AppError("oauth_config_incomplete", 500);
+    }
+    const params = new URLSearchParams({
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      response_type: "code",
+      scope: "openid email profile",
+      state
+    });
+    return { url: `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/authorize?${params.toString()}` };
+  }
+  async handleCallback(params, _codeVerifier) {
+    const code = typeof params === "string" ? params : params.get("code");
+    if (!code) {
+      throw new AppError("oauth_code_missing", 400);
+    }
+    const clientId = this.env.OAUTH_MICROSOFT_CLIENT_ID;
+    const clientSecret = this.env.OAUTH_MICROSOFT_CLIENT_SECRET;
+    const redirectUri = this.env.OAUTH_MICROSOFT_REDIRECT_URI;
+    const tenantId = this.getTenantId();
+    if (!clientId || !clientSecret || !redirectUri) {
+      throw new AppError("oauth_config_incomplete", 500);
+    }
+    const tokenResponse = await fetch(`https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      body: new URLSearchParams({
+        client_id: clientId,
+        client_secret: clientSecret,
+        code,
+        grant_type: "authorization_code",
+        redirect_uri: redirectUri
+      })
+    });
+    if (!tokenResponse.ok) {
+      const errText = await tokenResponse.text();
+      throw new AppError(`oauth_token_exchange_failed: Microsoft | ${tokenResponse.status} - ${errText}`, 502);
+    }
+    const tokenData = await tokenResponse.json();
+    const accessToken = tokenData.access_token;
+    const userResponse = await fetch("https://graph.microsoft.com/oidc/userinfo", {
+      headers: {
+        "Authorization": `Bearer ${accessToken}`
+      }
+    });
+    if (!userResponse.ok) throw new AppError(`oauth_api_error: Microsoft | ${userResponse.status}`, 502);
+    const userData = await userResponse.json();
+    return {
+      id: String(userData.sub),
+      username: userData.name || userData.email?.split("@")[0] || userData.sub,
+      email: userData.email || "",
+      avatar: userData.picture || "",
+      provider: this.id
+    };
+  }
+};
+
 // src/features/auth/providers/index.ts
 function getOAuthProvider(providerId, env) {
   switch (providerId.toLowerCase()) {
@@ -24660,6 +25050,16 @@ function getOAuthProvider(providerId, env) {
       return new TelegramProvider(env);
     case "google":
       return new GoogleProvider(env);
+    case "twitter":
+      return new TwitterProvider(env);
+    case "lark":
+      return new LarkProvider(env);
+    case "feishu":
+      return new FeishuProvider(env);
+    case "dingtalk":
+      return new DingtalkProvider(env);
+    case "microsoft":
+      return new MicrosoftProvider(env);
     default:
       throw new AppError(`unsupported_provider: ${providerId}`, 400);
   }
@@ -24672,6 +25072,11 @@ function getAvailableProviders(env) {
   const giteeProvider = new GiteeProvider(env);
   const telegramProvider = new TelegramProvider(env);
   const googleProvider = new GoogleProvider(env);
+  const twitterProvider = new TwitterProvider(env);
+  const larkProvider = new LarkProvider(env);
+  const feishuProvider = new FeishuProvider(env);
+  const dingtalkProvider = new DingtalkProvider(env);
+  const microsoftProvider = new MicrosoftProvider(env);
   if (env.OAUTH_GOOGLE_CLIENT_ID && env.OAUTH_GOOGLE_CLIENT_SECRET) {
     providers.push({
       id: googleProvider.id,
@@ -24702,6 +25107,46 @@ function getAvailableProviders(env) {
       name: cloudflareProvider.name,
       icon: cloudflareProvider.icon,
       color: cloudflareProvider.color
+    });
+  }
+  if (env.OAUTH_LARK_CLIENT_ID && env.OAUTH_LARK_CLIENT_SECRET) {
+    providers.push({
+      id: larkProvider.id,
+      name: larkProvider.name,
+      icon: larkProvider.icon,
+      color: larkProvider.color
+    });
+  }
+  if (env.OAUTH_FEISHU_CLIENT_ID && env.OAUTH_FEISHU_CLIENT_SECRET) {
+    providers.push({
+      id: feishuProvider.id,
+      name: feishuProvider.name,
+      icon: feishuProvider.icon,
+      color: feishuProvider.color
+    });
+  }
+  if (env.OAUTH_MICROSOFT_CLIENT_ID && env.OAUTH_MICROSOFT_CLIENT_SECRET) {
+    providers.push({
+      id: microsoftProvider.id,
+      name: microsoftProvider.name,
+      icon: microsoftProvider.icon,
+      color: microsoftProvider.color
+    });
+  }
+  if (env.OAUTH_DINGTALK_CLIENT_ID && env.OAUTH_DINGTALK_CLIENT_SECRET) {
+    providers.push({
+      id: dingtalkProvider.id,
+      name: dingtalkProvider.name,
+      icon: dingtalkProvider.icon,
+      color: dingtalkProvider.color
+    });
+  }
+  if (env.OAUTH_TWITTER_CLIENT_ID && env.OAUTH_TWITTER_CLIENT_SECRET) {
+    providers.push({
+      id: twitterProvider.id,
+      name: twitterProvider.name,
+      icon: twitterProvider.icon,
+      color: twitterProvider.color
     });
   }
   if (env.OAUTH_GITEE_CLIENT_ID && env.OAUTH_GITEE_CLIENT_SECRET) {
@@ -24862,8 +25307,17 @@ var AuthService = class {
           isAllowed = true;
         }
       }
-      if (!isAllowed && whitelistFields.includes("id") && userId && allowedIdentities.includes(userId)) {
-        isAllowed = true;
+      if (!isAllowed && whitelistFields.includes("id") && userId) {
+        const namespacedId = `${userInfo.provider}:${userId}`.toLowerCase();
+        if (allowedIdentities.includes(namespacedId)) {
+          isAllowed = true;
+        }
+      }
+      if (!isAllowed && whitelistFields.includes("mobile")) {
+        const userMobile = (userInfo.mobile || "").toLowerCase();
+        if (userMobile && allowedIdentities.includes(userMobile)) {
+          isAllowed = true;
+        }
       }
       if (!isAllowed) {
         throw new AppError("unauthorized_user", 403);
@@ -58057,8 +58511,8 @@ var GoogleDriveProvider = class {
   onConfigUpdate;
   constructor(config, env) {
     this.config = config;
-    this.clientId = env.OAUTH_GOOGLE_CLIENT_ID;
-    this.clientSecret = env.OAUTH_GOOGLE_CLIENT_SECRET;
+    this.clientId = env.OAUTH_GOOGLE_BACKUP_CLIENT_ID;
+    this.clientSecret = env.OAUTH_GOOGLE_BACKUP_CLIENT_SECRET;
     if (!config.refreshToken) {
       throw new Error("gdrive_token_missing");
     }
@@ -58242,8 +58696,8 @@ var OneDriveProvider = class {
     if (this.accessToken && Date.now() < this.tokenExpiry) {
       return this.accessToken;
     }
-    const clientId = this.env.OAUTH_MICROSOFT_CLIENT_ID;
-    const clientSecret = this.env.OAUTH_MICROSOFT_CLIENT_SECRET;
+    const clientId = this.env.OAUTH_MICROSOFT_BACKUP_CLIENT_ID;
+    const clientSecret = this.env.OAUTH_MICROSOFT_BACKUP_CLIENT_SECRET;
     if (!clientId) {
       throw new Error("OAUTH_MICROSOFT_CLIENT_ID is not configured");
     }
@@ -58255,7 +58709,8 @@ var OneDriveProvider = class {
     if (clientSecret) {
       params.append("client_secret", clientSecret);
     }
-    const res = await fetch("https://login.microsoftonline.com/common/oauth2/v2.0/token", {
+    const tenantId = this.env.OAUTH_MICROSOFT_BACKUP_TENANT_ID || "common";
+    const res = await fetch(`https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: params
@@ -58406,13 +58861,13 @@ var BaiduNetdiskProvider = class {
   onConfigUpdate;
   constructor(config, env) {
     this.config = config;
-    this.clientId = env.OAUTH_BAIDU_CLIENT_ID || "";
-    this.clientSecret = env.OAUTH_BAIDU_CLIENT_SECRET || "";
+    this.clientId = env.OAUTH_BAIDU_BACKUP_CLIENT_ID || "";
+    this.clientSecret = env.OAUTH_BAIDU_BACKUP_CLIENT_SECRET || "";
     this.refreshToken = config.refreshToken;
     this.saveDir = config.saveDir || "/apps/nodeauth-backup";
     this.env = env;
     if (!this.clientId) {
-      throw new Error("OAUTH_BAIDU_CLIENT_ID is not configured");
+      throw new Error("OAUTH_BAIDU_BACKUP_CLIENT_ID is not configured");
     }
   }
   async getAccessToken() {
@@ -58581,8 +59036,8 @@ var DropboxProvider = class {
   onConfigUpdate;
   constructor(config, env) {
     this.config = config;
-    this.clientId = env.OAUTH_DROPBOX_CLIENT_ID;
-    this.clientSecret = env.OAUTH_DROPBOX_CLIENT_SECRET;
+    this.clientId = env.OAUTH_DROPBOX_BACKUP_CLIENT_ID;
+    this.clientSecret = env.OAUTH_DROPBOX_BACKUP_CLIENT_SECRET;
     if (!config.refreshToken) {
       throw new Error("dropbox_token_missing");
     }
@@ -59610,8 +60065,8 @@ backups.get("/oauth/google/callback", async (c2) => {
             <\/script></body></html>
         `);
   }
-  const clientId = c2.env.OAUTH_GOOGLE_CLIENT_ID;
-  const clientSecret = c2.env.OAUTH_GOOGLE_CLIENT_SECRET;
+  const clientId = c2.env.OAUTH_GOOGLE_BACKUP_CLIENT_ID;
+  const clientSecret = c2.env.OAUTH_GOOGLE_BACKUP_CLIENT_SECRET;
   const redirectUri = c2.env.OAUTH_GOOGLE_BACKUP_REDIRECT_URI || `${new URL(c2.req.url).origin}/api/backups/oauth/google/callback`;
   const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
@@ -59767,10 +60222,11 @@ backups.get("/oauth/microsoft/callback", async (c2) => {
             <\/script></body></html>
         `);
   }
-  const clientId = c2.env.OAUTH_MICROSOFT_CLIENT_ID;
-  const clientSecret = c2.env.OAUTH_MICROSOFT_CLIENT_SECRET;
+  const clientId = c2.env.OAUTH_MICROSOFT_BACKUP_CLIENT_ID;
+  const clientSecret = c2.env.OAUTH_MICROSOFT_BACKUP_CLIENT_SECRET;
   const redirectUri = c2.env.OAUTH_MICROSOFT_BACKUP_REDIRECT_URI || `${new URL(c2.req.url).origin}/api/backups/oauth/microsoft/callback`;
-  const tokenRes = await fetch("https://login.microsoftonline.com/common/oauth2/v2.0/token", {
+  const tenantId = c2.env.OAUTH_MICROSOFT_BACKUP_TENANT_ID || "common";
+  const tokenRes = await fetch(`https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -59921,8 +60377,8 @@ backups.get("/oauth/baidu/callback", async (c2) => {
             <\/script></body></html>
         `);
   }
-  const clientId = c2.env.OAUTH_BAIDU_CLIENT_ID;
-  const clientSecret = c2.env.OAUTH_BAIDU_CLIENT_SECRET;
+  const clientId = c2.env.OAUTH_BAIDU_BACKUP_CLIENT_ID;
+  const clientSecret = c2.env.OAUTH_BAIDU_BACKUP_CLIENT_SECRET;
   const redirectUri = c2.env.OAUTH_BAIDU_BACKUP_REDIRECT_URI || `${new URL(c2.req.url).origin}/api/backups/oauth/baidu/callback`;
   const tokenRes = await fetch("https://openapi.baidu.com/oauth/2.0/token", {
     method: "POST",
@@ -60075,8 +60531,8 @@ backups.get("/oauth/dropbox/callback", async (c2) => {
             <\/script></body></html>
         `);
   }
-  const clientId = c2.env.OAUTH_DROPBOX_CLIENT_ID;
-  const clientSecret = c2.env.OAUTH_DROPBOX_CLIENT_SECRET;
+  const clientId = c2.env.OAUTH_DROPBOX_BACKUP_CLIENT_ID;
+  const clientSecret = c2.env.OAUTH_DROPBOX_BACKUP_CLIENT_SECRET;
   const redirectUri = c2.env.OAUTH_DROPBOX_BACKUP_REDIRECT_URI || `${new URL(c2.req.url).origin}/api/backups/oauth/dropbox/callback`;
   const tokenRes = await fetch("https://api.dropboxapi.com/oauth2/token", {
     method: "POST",
@@ -60176,16 +60632,16 @@ backups.get("/providers", async (c2) => {
   const service = new BackupService(c2.env, c2.req.header("Accept-Language"));
   const providers = await service.getProvidersList();
   const availableTypes = ["s3", "telegram", "webdav", "email", "github"];
-  if (c2.env.OAUTH_GOOGLE_CLIENT_ID && c2.env.OAUTH_GOOGLE_CLIENT_SECRET) {
+  if (c2.env.OAUTH_GOOGLE_BACKUP_CLIENT_ID && c2.env.OAUTH_GOOGLE_BACKUP_CLIENT_SECRET) {
     availableTypes.push("gdrive");
   }
-  if (c2.env.OAUTH_MICROSOFT_CLIENT_ID && c2.env.OAUTH_MICROSOFT_CLIENT_SECRET) {
+  if (c2.env.OAUTH_MICROSOFT_BACKUP_CLIENT_ID && c2.env.OAUTH_MICROSOFT_BACKUP_CLIENT_SECRET) {
     availableTypes.push("onedrive");
   }
-  if (c2.env.OAUTH_BAIDU_CLIENT_ID && c2.env.OAUTH_BAIDU_CLIENT_SECRET) {
+  if (c2.env.OAUTH_BAIDU_BACKUP_CLIENT_ID && c2.env.OAUTH_BAIDU_BACKUP_CLIENT_SECRET) {
     availableTypes.push("baidu");
   }
-  if (c2.env.OAUTH_DROPBOX_CLIENT_ID && c2.env.OAUTH_DROPBOX_CLIENT_SECRET) {
+  if (c2.env.OAUTH_DROPBOX_BACKUP_CLIENT_ID && c2.env.OAUTH_DROPBOX_BACKUP_CLIENT_SECRET) {
     availableTypes.push("dropbox");
   }
   return c2.json({ success: true, providers, availableTypes });
@@ -60243,7 +60699,7 @@ backups.post("/providers/:id/files/delete", async (c2) => {
   return c2.json({ success: true });
 });
 backups.post("/oauth/google/auth", async (c2) => {
-  const clientId = c2.env.OAUTH_GOOGLE_CLIENT_ID;
+  const clientId = c2.env.OAUTH_GOOGLE_BACKUP_CLIENT_ID;
   const redirectUri = c2.env.OAUTH_GOOGLE_BACKUP_REDIRECT_URI || `${new URL(c2.req.url).origin}/api/backups/oauth/google/callback`;
   if (!clientId) throw new AppError("oauth_config_incomplete", 400);
   const state = crypto.randomUUID();
@@ -60271,8 +60727,9 @@ backups.post("/oauth/google/auth", async (c2) => {
   });
 });
 backups.post("/oauth/microsoft/auth", async (c2) => {
-  const clientId = c2.env.OAUTH_MICROSOFT_CLIENT_ID;
+  const clientId = c2.env.OAUTH_MICROSOFT_BACKUP_CLIENT_ID;
   const redirectUri = c2.env.OAUTH_MICROSOFT_BACKUP_REDIRECT_URI || `${new URL(c2.req.url).origin}/api/backups/oauth/microsoft/callback`;
+  const tenantId = c2.env.OAUTH_MICROSOFT_BACKUP_TENANT_ID || "common";
   if (!clientId) throw new AppError("oauth_config_incomplete", 400);
   const state = crypto.randomUUID();
   setCookie(c2, "ms_oauth_state", state, {
@@ -60291,11 +60748,11 @@ backups.post("/oauth/microsoft/auth", async (c2) => {
   });
   return c2.json({
     success: true,
-    authUrl: `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?${params.toString()}`
+    authUrl: `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/authorize?${params.toString()}`
   });
 });
 backups.post("/oauth/baidu/auth", async (c2) => {
-  const clientId = c2.env.OAUTH_BAIDU_CLIENT_ID;
+  const clientId = c2.env.OAUTH_BAIDU_BACKUP_CLIENT_ID;
   const redirectUri = c2.env.OAUTH_BAIDU_BACKUP_REDIRECT_URI || `${new URL(c2.req.url).origin}/api/backups/oauth/baidu/callback`;
   if (!clientId) throw new AppError("oauth_config_incomplete", 400);
   const state = crypto.randomUUID();
@@ -60320,7 +60777,7 @@ backups.post("/oauth/baidu/auth", async (c2) => {
   });
 });
 backups.post("/oauth/dropbox/auth", async (c2) => {
-  const clientId = c2.env.OAUTH_DROPBOX_CLIENT_ID;
+  const clientId = c2.env.OAUTH_DROPBOX_BACKUP_CLIENT_ID;
   const redirectUri = c2.env.OAUTH_DROPBOX_BACKUP_REDIRECT_URI || `${new URL(c2.req.url).origin}/api/backups/oauth/dropbox/callback`;
   if (!clientId) throw new AppError("oauth_config_incomplete", 400);
   const state = crypto.randomUUID();

@@ -1,6 +1,6 @@
 {
   "name": "nodeauth-backend-worker",
-  "version": "2.3.22",
+  "version": "2.3.23",
   "description": "NodeAuth Backend Runtime Dependencies (Distribution Version)",
   "private": true,
   "type": "module",
